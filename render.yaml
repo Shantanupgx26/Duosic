@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: duosic
+    runtime: node
+    region: singapore
+    rootDir: .
+    buildCommand: npm run install:all && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false
+      - key: ROOM_IDLE_TTL_HOURS
+        value: 12
