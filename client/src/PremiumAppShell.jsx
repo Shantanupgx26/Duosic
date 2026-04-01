@@ -23,6 +23,10 @@ function getExpectedPositionMs(playback, durationMs, clockOffsetMs, nowMs) {
     ? playback.positionMs + (nowMs + clockOffsetMs - updatedAtMs)
     : playback.positionMs;
 
+  if (!durationMs || durationMs < 1) {
+    return Math.max(0, currentTimeMs);
+  }
+
   return Math.max(0, Math.min(currentTimeMs, durationMs));
 }
 
@@ -90,6 +94,14 @@ export default function PremiumAppShell() {
   const [nowMs, setNowMs] = useState(Date.now());
   const [dragPositionMs, setDragPositionMs] = useState(null);
   const [chatInput, setChatInput] = useState("");
+  const [trackForm, setTrackForm] = useState({
+    title: "",
+    artist: "",
+    streamUrl: "",
+    artwork: "",
+    durationMs: ""
+  });
+  const [trackBusy, setTrackBusy] = useState(false);
   const [notice, setNotice] = useState(
     "Sign in, open a room, and keep every listener on the same clock."
   );
@@ -271,7 +283,8 @@ export default function PremiumAppShell() {
   }, [room, currentTrack, dragPositionMs, clockOffsetMs, nowMs]);
 
   const progressLabel = currentTrack ? formatClock(progressMs / 1000) : "0:00";
-  const durationLabel = currentTrack ? formatClock(currentTrack.durationMs / 1000) : "0:00";
+  const durationLabel =
+    currentTrack && currentTrack.durationMs > 0 ? formatClock(currentTrack.durationMs / 1000) : "--:--";
 
   async function handleAuthSubmit() {
     setAuthBusy(true);
@@ -367,6 +380,43 @@ export default function PremiumAppShell() {
       setCopyState("Copied");
     } catch {
       setCopyState("Copy failed");
+    }
+  }
+
+  async function handleAddTrack() {
+    if (!session?.roomCode || !authSession?.token) {
+      setNotice("Create or join a room before adding tracks.");
+      return;
+    }
+
+    setTrackBusy(true);
+
+    try {
+      const payload = await sendRequest(`/api/rooms/${session.roomCode}/tracks`, {
+        method: "POST",
+        token: authSession.token,
+        body: {
+          title: trackForm.title,
+          artist: trackForm.artist,
+          streamUrl: trackForm.streamUrl,
+          artwork: trackForm.artwork,
+          durationMs: trackForm.durationMs ? Number(trackForm.durationMs) : 0
+        }
+      });
+
+      setRoom(payload.room);
+      setTrackForm({
+        title: "",
+        artist: "",
+        streamUrl: "",
+        artwork: "",
+        durationMs: ""
+      });
+      setNotice("Track added to the queue.");
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setTrackBusy(false);
     }
   }
 
@@ -485,7 +535,7 @@ export default function PremiumAppShell() {
               <input
                 type="range"
                 min="0"
-                max={currentTrack?.durationMs ?? 0}
+                max={Math.max(currentTrack?.durationMs ?? 0, progressMs, 1)}
                 value={progressMs}
                 disabled={!canControlPlayback || !currentTrack}
                 onChange={(event) => setDragPositionMs(Number(event.target.value))}
@@ -707,8 +757,74 @@ export default function PremiumAppShell() {
             <SectionHeader
               eyebrow="Queue"
               title="Track list"
-              description="Select the next track if you have host control."
+              description="Select the next track if you have host control, or add your own direct audio link."
             />
+
+            {isHost ? (
+              <div className="stack-block">
+                <div className="form-stack">
+                  <label className="field">
+                    <span>Track title</span>
+                    <input
+                      value={trackForm.title}
+                      onChange={(event) =>
+                        setTrackForm((current) => ({ ...current, title: event.target.value }))
+                      }
+                      placeholder="Song title"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Artist</span>
+                    <input
+                      value={trackForm.artist}
+                      onChange={(event) =>
+                        setTrackForm((current) => ({ ...current, artist: event.target.value }))
+                      }
+                      placeholder="Artist name"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Audio URL</span>
+                    <input
+                      value={trackForm.streamUrl}
+                      onChange={(event) =>
+                        setTrackForm((current) => ({ ...current, streamUrl: event.target.value }))
+                      }
+                      placeholder="https://example.com/song.mp3"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Artwork URL</span>
+                    <input
+                      value={trackForm.artwork}
+                      onChange={(event) =>
+                        setTrackForm((current) => ({ ...current, artwork: event.target.value }))
+                      }
+                      placeholder="https://example.com/cover.jpg"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Duration in ms optional</span>
+                    <input
+                      value={trackForm.durationMs}
+                      onChange={(event) =>
+                        setTrackForm((current) => ({ ...current, durationMs: event.target.value }))
+                      }
+                      placeholder="240000"
+                    />
+                  </label>
+                </div>
+
+                <button
+                  type="button"
+                  className="primary-button full-width"
+                  onClick={handleAddTrack}
+                  disabled={trackBusy || !session?.roomCode}
+                >
+                  {trackBusy ? "Adding track" : "Add track to queue"}
+                </button>
+              </div>
+            ) : null}
 
             <div className="queue-list">
               {queue.length ? (
@@ -724,7 +840,7 @@ export default function PremiumAppShell() {
                       <strong>{track.title}</strong>
                       <span>{track.artist}</span>
                     </div>
-                    <small>{formatClock(track.durationMs / 1000)}</small>
+                    <small>{track.durationMs > 0 ? formatClock(track.durationMs / 1000) : "Unknown"}</small>
                   </button>
                 ))
               ) : (

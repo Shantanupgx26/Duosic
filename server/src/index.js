@@ -66,6 +66,20 @@ function normalizeMessageBody(input) {
   return String(input ?? "").trim().slice(0, 300);
 }
 
+function normalizeTrackField(input, maxLength = 160) {
+  return String(input ?? "").trim().slice(0, maxLength);
+}
+
+function normalizeTrackUrl(input) {
+  const value = String(input ?? "").trim().slice(0, 1000);
+  return /^https?:\/\//i.test(value) ? value : "";
+}
+
+function normalizeDurationMs(input) {
+  const value = Number(input);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+}
+
 function sendBadRequest(response, message) {
   return response.status(400).json({ message });
 }
@@ -234,6 +248,48 @@ app.get("/api/rooms/:roomCode", requireAuth, async (request, response) => {
     return response.json({ room });
   } catch (error) {
     return response.status(500).json({ message: error.message });
+  }
+});
+
+app.post("/api/rooms/:roomCode/tracks", requireAuth, async (request, response) => {
+  try {
+    const roomCode = normalizeRoomCode(request.params.roomCode);
+    const title = normalizeTrackField(request.body.title, 120);
+    const artist = normalizeTrackField(request.body.artist, 120);
+    const streamUrl = normalizeTrackUrl(request.body.streamUrl);
+    const artwork = normalizeTrackUrl(request.body.artwork);
+    const durationMs = normalizeDurationMs(request.body.durationMs);
+
+    if (!roomCode || !title || !artist || !streamUrl) {
+      return sendBadRequest(response, "Room code, title, artist, and a direct audio URL are required.");
+    }
+
+    const room = await roomStore.addTrack({
+      roomCode,
+      actorId: request.user.id,
+      track: {
+        title,
+        artist,
+        artwork,
+        streamUrl,
+        durationMs
+      }
+    });
+
+    io.to(roomCode).emit("room:state", {
+      room,
+      serverNow: Date.now()
+    });
+
+    return response.status(201).json({ room });
+  } catch (error) {
+    const statusCode =
+      error.message === "Room not found"
+        ? 404
+        : error.message?.includes("Only the host")
+          ? 403
+          : 500;
+    return response.status(statusCode).json({ message: error.message });
   }
 });
 

@@ -16,7 +16,7 @@ const roomSchema = new mongoose.Schema(
         isConnected: { type: Boolean, default: true }
       }
     ],
-    queue: [{ type: String, required: true }],
+    queue: [{ type: mongoose.Schema.Types.Mixed, required: true }],
     playback: {
       trackId: { type: String, required: true },
       isPlaying: { type: Boolean, default: false },
@@ -41,6 +41,7 @@ roomSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 7 });
 const RoomModel = mongoose.models.Room || mongoose.model("Room", roomSchema);
 
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const FALLBACK_ARTWORK = sampleTracks[0]?.artwork ?? "";
 
 function createRoomCode() {
   return Array.from({ length: 6 }, () => {
@@ -49,8 +50,68 @@ function createRoomCode() {
   }).join("");
 }
 
+function createTrackId(prefix = "track") {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function normalizeTrack(track) {
+  if (!track) {
+    return null;
+  }
+
+  if (typeof track === "string") {
+    return trackMap.get(track) ?? null;
+  }
+
+  const id = String(track.id ?? "").trim();
+  const title = String(track.title ?? "").trim();
+  const artist = String(track.artist ?? "").trim();
+  const streamUrl = String(track.streamUrl ?? "").trim();
+  const artwork = String(track.artwork ?? "").trim() || FALLBACK_ARTWORK;
+  const durationMs = Number(track.durationMs ?? 0);
+
+  if (!id || !title || !artist || !streamUrl) {
+    return null;
+  }
+
+  return {
+    id,
+    title,
+    artist,
+    artwork,
+    streamUrl,
+    durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.round(durationMs) : 0,
+    isCustom: Boolean(track.isCustom)
+  };
+}
+
+function normalizeQueue(queue = []) {
+  return queue.map(normalizeTrack).filter(Boolean);
+}
+
+function hydrateRoom(room) {
+  const queue = normalizeQueue(room.queue);
+  const trackIds = new Set(queue.map((track) => track.id));
+  const playbackTrackId = trackIds.has(room.playback?.trackId)
+    ? room.playback.trackId
+    : queue[0]?.id ?? sampleTracks[0].id;
+
+  return {
+    ...room,
+    queue,
+    playback: {
+      ...room.playback,
+      trackId: playbackTrackId
+    }
+  };
+}
+
 function clampPosition(positionMs, trackId) {
-  const durationMs = trackMap.get(trackId)?.durationMs ?? positionMs;
+  const durationMs = trackMap.get(trackId)?.durationMs ?? 0;
+  if (!durationMs || durationMs < 1) {
+    return Math.max(0, positionMs);
+  }
+
   return Math.max(0, Math.min(positionMs, durationMs));
 }
 
@@ -64,7 +125,13 @@ function getPositionAt(playback, nowMs = Date.now()) {
 }
 
 function toSerializableRoom(room) {
-  const currentTrack = trackMap.get(room.playback.trackId) ?? sampleTracks[0];
+  const queue = normalizeQueue(room.queue);
+  const queueTrackMap = new Map(queue.map((track) => [track.id, track]));
+  const currentTrack =
+    queueTrackMap.get(room.playback.trackId) ??
+    trackMap.get(room.playback.trackId) ??
+    queue[0] ??
+    sampleTracks[0];
 
   return {
     roomCode: room.roomCode,
@@ -75,9 +142,7 @@ function toSerializableRoom(room) {
       ...participant,
       isConnected: Array.isArray(socketIds) ? socketIds.length > 0 : Boolean(participant.isConnected)
     })),
-    queue: room.queue
-      .map((trackId) => trackMap.get(trackId))
-      .filter(Boolean),
+    queue,
     currentTrack,
     playback: {
       ...room.playback,
@@ -89,6 +154,7 @@ function toSerializableRoom(room) {
 
 function makeNewRoom({ ownerId, displayName }) {
   const joinedAt = new Date();
+  const queue = sampleTracks.map((track) => ({ ...track }));
 
   return {
     roomCode: "",
@@ -102,9 +168,9 @@ function makeNewRoom({ ownerId, displayName }) {
         isConnected: true
       }
     ],
-    queue: sampleTracks.map((track) => track.id),
+    queue,
     playback: {
-      trackId: sampleTracks[0].id,
+      trackId: queue[0].id,
       isPlaying: false,
       positionMs: 0,
       updatedAt: joinedAt
@@ -166,7 +232,9 @@ export class RoomStore {
   async getRoom(roomCode) {
     const normalizedCode = roomCode.toUpperCase();
     if (this.rooms.has(normalizedCode)) {
-      return this.rooms.get(normalizedCode);
+      const cachedRoom = hydrateRoom(this.rooms.get(normalizedCode));
+      this.rooms.set(normalizedCode, cachedRoom);
+      return cachedRoom;
     }
 
     if (!this.mongoEnabled) {
@@ -178,8 +246,9 @@ export class RoomStore {
       return null;
     }
 
-    this.rooms.set(normalizedCode, storedRoom);
-    return storedRoom;
+    const hydratedRoom = hydrateRoom(storedRoom);
+    this.rooms.set(normalizedCode, hydratedRoom);
+    return hydratedRoom;
   }
 
   async getSerializableRoom(roomCode) {
@@ -283,6 +352,7 @@ export class RoomStore {
 
   async updateTransport({ roomCode, actorId, type, payload = {} }) {
     const room = await this.assertParticipant(roomCode, actorId);
+    const queueTrackIds = new Set(room.queue.map((track) => track.id));
 
     if (room.ownerId !== actorId) {
       throw new Error("Only the host can control playback.");
@@ -304,7 +374,7 @@ export class RoomStore {
 
     if (type === "select-track") {
       const nextTrackId = payload.trackId;
-      if (!trackMap.has(nextTrackId)) {
+      if (!queueTrackIds.has(nextTrackId) && !trackMap.has(nextTrackId)) {
         throw new Error("Track not found");
       }
 
@@ -314,6 +384,34 @@ export class RoomStore {
     }
 
     room.updatedAt = now;
+    await this.persistRoom(room);
+
+    return toSerializableRoom(room);
+  }
+
+  async addTrack({ roomCode, actorId, track }) {
+    const room = await this.assertParticipant(roomCode, actorId);
+
+    if (room.ownerId !== actorId) {
+      throw new Error("Only the host can add tracks.");
+    }
+
+    const normalizedTrack = normalizeTrack({
+      id: createTrackId("custom"),
+      title: track.title,
+      artist: track.artist,
+      artwork: track.artwork,
+      streamUrl: track.streamUrl,
+      durationMs: track.durationMs,
+      isCustom: true
+    });
+
+    if (!normalizedTrack) {
+      throw new Error("Track details are invalid.");
+    }
+
+    room.queue = [...room.queue, normalizedTrack];
+    room.updatedAt = new Date();
     await this.persistRoom(room);
 
     return toSerializableRoom(room);
@@ -341,7 +439,8 @@ export class RoomStore {
   }
 
   async persistRoom(room) {
-    this.rooms.set(room.roomCode, room);
+    const hydratedRoom = hydrateRoom(room);
+    this.rooms.set(room.roomCode, hydratedRoom);
 
     if (!this.mongoEnabled) {
       return;
@@ -353,8 +452,8 @@ export class RoomStore {
         roomCode: room.roomCode,
         ownerId: room.ownerId,
         participants: room.participants,
-        queue: room.queue,
-        playback: room.playback,
+        queue: hydratedRoom.queue,
+        playback: hydratedRoom.playback,
         messages: room.messages ?? [],
         createdAt: room.createdAt,
         updatedAt: room.updatedAt
