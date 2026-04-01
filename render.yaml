@@ -15,5 +15,7 @@ services:
         value: production
       - key: MONGO_URI
         sync: false
+      - key: JWT_SECRET
+        sync: false
       - key: ROOM_IDLE_TTL_HOURS
         value: 12

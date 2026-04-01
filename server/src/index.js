@@ -8,8 +8,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 
+import { extractBearerToken, signAuthToken, verifyAuthToken } from "./lib/auth.js";
 import { sampleTracks } from "./data/sampleTracks.js";
 import { RoomStore } from "./store/roomStore.js";
+import { UserStore } from "./store/userStore.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -44,12 +46,24 @@ function normalizeParticipantId(input) {
   return String(input ?? "").trim().slice(0, 120);
 }
 
+function normalizeEmail(input) {
+  return String(input ?? "").trim().toLowerCase().slice(0, 160);
+}
+
+function normalizePassword(input) {
+  return String(input ?? "");
+}
+
 function normalizeRoomCode(input) {
   return String(input ?? "")
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 6);
+}
+
+function normalizeMessageBody(input) {
+  return String(input ?? "").trim().slice(0, 300);
 }
 
 function sendBadRequest(response, message) {
@@ -73,6 +87,31 @@ const io = new Server(httpServer, {
 const roomStore = new RoomStore({
   roomTtlMs: ROOM_IDLE_TTL_HOURS * 60 * 60 * 1000
 });
+const userStore = new UserStore();
+
+async function resolveUserFromToken(token) {
+  const payload = verifyAuthToken(token);
+  const user = await userStore.getUserById(payload.sub);
+  if (!user) {
+    throw new Error("Session expired.");
+  }
+
+  return user;
+}
+
+async function requireAuth(request, response, next) {
+  const token = extractBearerToken(request.headers.authorization);
+  if (!token) {
+    return response.status(401).json({ message: "Authentication required." });
+  }
+
+  try {
+    request.user = await resolveUserFromToken(token);
+    next();
+  } catch (error) {
+    return response.status(401).json({ message: error.message || "Authentication failed." });
+  }
+}
 
 app.set("trust proxy", 1);
 app.use(
@@ -107,39 +146,77 @@ app.get("/api/tracks", (_request, response) => {
   response.json({ tracks: sampleTracks });
 });
 
-app.post("/api/rooms/create", async (request, response) => {
+app.post("/api/auth/register", async (request, response) => {
   try {
     const displayName = normalizeDisplayName(request.body.displayName);
-    const participantId = normalizeParticipantId(request.body.participantId);
+    const email = normalizeEmail(request.body.email);
+    const password = normalizePassword(request.body.password);
 
-    if (!displayName || !participantId) {
-      return sendBadRequest(response, "Display name and participant id are required.");
+    if (!displayName || !email || password.length < 6) {
+      return sendBadRequest(response, "Display name, email, and a password with at least 6 characters are required.");
     }
 
-    const room = await roomStore.createRoom({ participantId, displayName });
+    const user = await userStore.createUser({ displayName, email, password });
+    const token = signAuthToken(user);
+    return response.status(201).json({ token, user });
+  } catch (error) {
+    const statusCode = error.message?.includes("already exists") ? 409 : 500;
+    return response.status(statusCode).json({ message: error.message });
+  }
+});
+
+app.post("/api/auth/login", async (request, response) => {
+  try {
+    const email = normalizeEmail(request.body.email);
+    const password = normalizePassword(request.body.password);
+
+    if (!email || !password) {
+      return sendBadRequest(response, "Email and password are required.");
+    }
+
+    const user = await userStore.authenticateUser({ email, password });
+    const token = signAuthToken(user);
+    return response.json({ token, user });
+  } catch (error) {
+    return response.status(401).json({ message: error.message });
+  }
+});
+
+app.get("/api/auth/me", requireAuth, async (request, response) => {
+  response.json({ user: request.user });
+});
+
+app.post("/api/rooms/create", requireAuth, async (request, response) => {
+  try {
+    const room = await roomStore.createRoom({
+      participantId: request.user.id,
+      displayName: request.user.displayName
+    });
     return response.status(201).json({
       room,
-      participant: { id: participantId, displayName }
+      participant: { id: request.user.id, displayName: request.user.displayName }
     });
   } catch (error) {
     return response.status(500).json({ message: error.message });
   }
 });
 
-app.post("/api/rooms/join", async (request, response) => {
+app.post("/api/rooms/join", requireAuth, async (request, response) => {
   try {
-    const displayName = normalizeDisplayName(request.body.displayName);
-    const participantId = normalizeParticipantId(request.body.participantId);
     const roomCode = normalizeRoomCode(request.body.roomCode);
 
-    if (!displayName || !participantId || !roomCode) {
-      return sendBadRequest(response, "Room code, display name, and participant id are required.");
+    if (!roomCode) {
+      return sendBadRequest(response, "Room code is required.");
     }
 
-    const room = await roomStore.joinRoom({ roomCode, participantId, displayName });
+    const room = await roomStore.joinRoom({
+      roomCode,
+      participantId: request.user.id,
+      displayName: request.user.displayName
+    });
     return response.json({
       room,
-      participant: { id: participantId, displayName }
+      participant: { id: request.user.id, displayName: request.user.displayName }
     });
   } catch (error) {
     const statusCode = error.message === "Room not found" ? 404 : 500;
@@ -147,7 +224,7 @@ app.post("/api/rooms/join", async (request, response) => {
   }
 });
 
-app.get("/api/rooms/:roomCode", async (request, response) => {
+app.get("/api/rooms/:roomCode", requireAuth, async (request, response) => {
   try {
     const room = await roomStore.getSerializableRoom(normalizeRoomCode(request.params.roomCode));
     if (!room) {
@@ -160,11 +237,29 @@ app.get("/api/rooms/:roomCode", async (request, response) => {
   }
 });
 
+io.use(async (socket, next) => {
+  try {
+    const rawToken =
+      socket.handshake.auth?.token ??
+      extractBearerToken(socket.handshake.headers.authorization);
+
+    if (!rawToken) {
+      next(new Error("Authentication required."));
+      return;
+    }
+
+    socket.data.user = await resolveUserFromToken(rawToken);
+    next();
+  } catch (error) {
+    next(new Error(error.message || "Authentication failed."));
+  }
+});
+
 io.on("connection", (socket) => {
-  socket.on("room:enter", async ({ roomCode, participant }) => {
+  socket.on("room:enter", async ({ roomCode }) => {
     try {
       const normalizedCode = normalizeRoomCode(roomCode);
-      const participantId = normalizeParticipantId(participant?.id);
+      const participantId = normalizeParticipantId(socket.data.user?.id);
 
       if (!normalizedCode || !participantId) {
         socket.emit("room:error", { message: "Room join payload is invalid." });
@@ -192,8 +287,35 @@ io.on("connection", (socket) => {
       const normalizedCode = normalizeRoomCode(roomCode);
       const room = await roomStore.updateTransport({
         roomCode: normalizedCode,
+        actorId: socket.data.user.id,
         type,
         payload
+      });
+
+      io.to(normalizedCode).emit("room:state", {
+        room,
+        serverNow: Date.now()
+      });
+    } catch (error) {
+      socket.emit("room:error", { message: error.message });
+    }
+  });
+
+  socket.on("chat:send", async ({ roomCode, body }) => {
+    try {
+      const normalizedCode = normalizeRoomCode(roomCode);
+      const messageBody = normalizeMessageBody(body);
+
+      if (!normalizedCode || !messageBody) {
+        socket.emit("room:error", { message: "Message text is required." });
+        return;
+      }
+
+      const room = await roomStore.addMessage({
+        roomCode: normalizedCode,
+        userId: socket.data.user.id,
+        displayName: socket.data.user.displayName,
+        body: messageBody
       });
 
       io.to(normalizedCode).emit("room:state", {

@@ -12,7 +12,10 @@ Duosic is a real-time synchronized music room app built with React, Express, Soc
 
 - Create or join a room with a short code
 - Share an invite link directly from the UI
+- Sign up or sign in with a persistent account
 - Play, pause, seek, and switch tracks together
+- Restrict playback control to the host while everyone else stays synced
+- Chat live inside the room while the track plays
 - Keep multiple tabs or devices aligned to the same playback state
 - Preserve room state in MongoDB when available
 
@@ -78,6 +81,7 @@ In production, the Express server serves `client/dist` directly, so the app work
 
 - `PORT=4000`
 - `MONGO_URI=...`
+- `JWT_SECRET=...`
 - `CLIENT_ORIGIN=http://localhost:5173`
 - `CLIENT_ORIGINS=https://your-frontend.example.com,https://www.your-frontend.example.com`
 - `ROOM_IDLE_TTL_HOURS=12`
@@ -109,7 +113,8 @@ This repo now includes [render.yaml](E:/01_MainData/Duosic/render.yaml#L1), so y
 2. In Render, choose `New +` -> `Blueprint`.
 3. Select the repository and let Render detect `render.yaml`.
 4. When prompted, set `MONGO_URI` to your production Mongo connection string.
-5. Deploy the `duosic` web service.
+5. Add a strong `JWT_SECRET` environment variable.
+6. Deploy the `duosic` web service.
 
 Render automatically provides `RENDER_EXTERNAL_HOSTNAME`, and the server now accepts that hostname for CORS by default. The service health check is `/api/health`.
 
@@ -127,8 +132,10 @@ Then open [http://localhost:4000](http://localhost:4000).
 ## Architecture notes
 
 - The server is the source of truth for room playback state.
+- Authenticated users are identified with JWTs and can reconnect across devices with the same account.
 - Playback uses `positionMs + updatedAt + isPlaying` instead of trusting each client clock directly.
 - Clients compute expected playback time locally and correct audible drift when it exceeds a small threshold.
+- Only the room host can control playback or change tracks; all authenticated participants can chat.
 - Participant presence now supports multiple open tabs per listener without false offline toggles.
 - Idle in-memory rooms are pruned automatically to keep the process clean between active sessions.
 

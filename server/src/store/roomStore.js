@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import mongoose from "mongoose";
 
 import { sampleTracks, trackMap } from "../data/sampleTracks.js";
@@ -21,7 +22,16 @@ const roomSchema = new mongoose.Schema(
       isPlaying: { type: Boolean, default: false },
       positionMs: { type: Number, default: 0 },
       updatedAt: { type: Date, required: true }
-    }
+    },
+    messages: [
+      {
+        id: { type: String, required: true },
+        userId: { type: String, required: true },
+        displayName: { type: String, required: true },
+        body: { type: String, required: true },
+        createdAt: { type: Date, required: true }
+      }
+    ]
   },
   { timestamps: true }
 );
@@ -72,7 +82,8 @@ function toSerializableRoom(room) {
     playback: {
       ...room.playback,
       positionMs: clampPosition(room.playback.positionMs, room.playback.trackId)
-    }
+    },
+    messages: (room.messages ?? []).slice(-100)
   };
 }
 
@@ -98,6 +109,7 @@ function makeNewRoom({ ownerId, displayName }) {
       positionMs: 0,
       updatedAt: joinedAt
     },
+    messages: [],
     createdAt: joinedAt,
     updatedAt: joinedAt
   };
@@ -229,6 +241,20 @@ export class RoomStore {
     return toSerializableRoom(room);
   }
 
+  async assertParticipant(roomCode, participantId) {
+    const room = await this.getRoom(roomCode);
+    if (!room) {
+      throw new Error("Room not found");
+    }
+
+    const participant = room.participants.find((entry) => entry.id === participantId);
+    if (!participant) {
+      throw new Error("Join the room before interacting with it.");
+    }
+
+    return room;
+  }
+
   async detachSocket(socketId) {
     const lookup = this.socketRoomIndex.get(socketId);
     if (!lookup) {
@@ -255,10 +281,11 @@ export class RoomStore {
     return toSerializableRoom(room);
   }
 
-  async updateTransport({ roomCode, type, payload = {} }) {
-    const room = await this.getRoom(roomCode);
-    if (!room) {
-      throw new Error("Room not found");
+  async updateTransport({ roomCode, actorId, type, payload = {} }) {
+    const room = await this.assertParticipant(roomCode, actorId);
+
+    if (room.ownerId !== actorId) {
+      throw new Error("Only the host can control playback.");
     }
 
     const now = new Date();
@@ -292,6 +319,27 @@ export class RoomStore {
     return toSerializableRoom(room);
   }
 
+  async addMessage({ roomCode, userId, displayName, body }) {
+    const room = await this.assertParticipant(roomCode, userId);
+    const now = new Date();
+
+    room.messages = [
+      ...(room.messages ?? []),
+      {
+        id: crypto.randomUUID(),
+        userId,
+        displayName,
+        body,
+        createdAt: now
+      }
+    ].slice(-100);
+
+    room.updatedAt = now;
+    await this.persistRoom(room);
+
+    return toSerializableRoom(room);
+  }
+
   async persistRoom(room) {
     this.rooms.set(room.roomCode, room);
 
@@ -307,6 +355,7 @@ export class RoomStore {
         participants: room.participants,
         queue: room.queue,
         playback: room.playback,
+        messages: room.messages ?? [],
         createdAt: room.createdAt,
         updatedAt: room.updatedAt
       },

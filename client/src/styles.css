@@ -132,7 +132,11 @@ button {
 .panel-header,
 .time-row,
 .control-row,
-.share-row {
+.share-row,
+.auth-toggle,
+.chat-compose,
+.profile-panel,
+.status-grid {
   display: flex;
   gap: 14px;
 }
@@ -174,6 +178,59 @@ button {
 .identity-panel {
   margin-top: 28px;
   flex-wrap: wrap;
+}
+
+.room-code-panel {
+  margin-top: 18px;
+}
+
+.auth-panel,
+.profile-panel,
+.chat-panel {
+  margin-top: 26px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 18px;
+}
+
+.auth-toggle {
+  margin-bottom: 12px;
+}
+
+.auth-tab {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 14px;
+}
+
+.auth-tab-active {
+  background: rgba(125, 249, 193, 0.1);
+  color: var(--text);
+  border-color: rgba(125, 249, 193, 0.3);
+}
+
+.auth-submit,
+.profile-button {
+  margin-top: 14px;
+}
+
+.profile-panel {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.profile-panel strong,
+.chat-message strong {
+  display: block;
+}
+
+.profile-panel span,
+.chat-empty,
+.chat-message p {
+  color: var(--muted);
 }
 
 .identity-panel label {
@@ -264,6 +321,24 @@ button {
   padding: 10px 16px;
 }
 
+.status-grid {
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.status-grid > div {
+  min-width: 120px;
+}
+
+.status-meta-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
 .workspace {
   margin-top: 28px;
   align-items: stretch;
@@ -297,6 +372,15 @@ button {
   font-size: clamp(2.5rem, 5vw, 4.25rem);
 }
 
+.host-banner {
+  margin: 4px 8px 0;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(125, 249, 193, 0.16);
+  background: rgba(125, 249, 193, 0.07);
+  color: var(--muted);
+}
+
 .progress-block {
   padding: 8px;
 }
@@ -322,7 +406,8 @@ button {
 }
 
 .presence-panel,
-.queue-panel {
+.queue-panel,
+.chat-panel {
   padding: 22px;
 }
 
@@ -340,9 +425,41 @@ button {
 }
 
 .listener-list,
-.queue-list {
+.queue-list,
+.chat-list {
   display: grid;
   gap: 12px;
+}
+
+.chat-list {
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.chat-message {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.chat-message p {
+  margin: 8px 0 0;
+  line-height: 1.5;
+}
+
+.chat-compose {
+  margin-top: 14px;
+}
+
+.chat-compose input {
+  flex: 1 1 auto;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 14px 16px;
 }
 
 .listener-row,
