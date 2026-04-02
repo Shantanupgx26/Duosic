@@ -17,5 +17,7 @@ services:
         sync: false
       - key: JWT_SECRET
         sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
       - key: ROOM_IDLE_TTL_HOURS
         value: 12

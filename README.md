@@ -82,6 +82,7 @@ In production, the Express server serves `client/dist` directly, so the app work
 - `PORT=4000`
 - `MONGO_URI=...`
 - `JWT_SECRET=...`
+- `YOUTUBE_API_KEY=...`
 - `CLIENT_ORIGIN=http://localhost:5173`
 - `CLIENT_ORIGINS=https://your-frontend.example.com,https://www.your-frontend.example.com`
 - `ROOM_IDLE_TTL_HOURS=12`
@@ -91,6 +92,7 @@ Notes:
 - `CLIENT_ORIGIN` and `CLIENT_ORIGINS` are optional if frontend and backend are served from the same host.
 - If `MONGO_URI` is missing or MongoDB is temporarily unreachable, the app falls back to in-memory room storage.
 - Mongo-backed rooms get a TTL index so stale rooms expire automatically after 7 days of inactivity.
+- `YOUTUBE_API_KEY` enables in-app YouTube search. Without it, YouTube links can still be added manually, but search stays unavailable.
 
 ### Client
 
@@ -114,7 +116,8 @@ This repo now includes [render.yaml](E:/01_MainData/Duosic/render.yaml#L1), so y
 3. Select the repository and let Render detect `render.yaml`.
 4. When prompted, set `MONGO_URI` to your production Mongo connection string.
 5. Add a strong `JWT_SECRET` environment variable.
-6. Deploy the `duosic` web service.
+6. Add `YOUTUBE_API_KEY` if you want in-app YouTube search results.
+7. Deploy the `duosic` web service.
 
 Render automatically provides `RENDER_EXTERNAL_HOSTNAME`, and the server now accepts that hostname for CORS by default. The service health check is `/api/health`.
 

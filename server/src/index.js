@@ -19,6 +19,7 @@ const httpServer = createServer(app);
 
 const PORT = Number(process.env.PORT ?? 4000);
 const ROOM_IDLE_TTL_HOURS = Number(process.env.ROOM_IDLE_TTL_HOURS ?? 12);
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY ?? "";
 const CLIENT_DIST_PATH = resolve(__dirname, "../../client/dist");
 const rawClientOrigins = [
   process.env.CLIENT_ORIGIN,
@@ -80,6 +81,10 @@ function normalizeDurationMs(input) {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
 }
 
+function normalizeSearchQuery(input) {
+  return String(input ?? "").trim().slice(0, 120);
+}
+
 function extractYouTubeVideoId(input) {
   const value = String(input ?? "").trim();
 
@@ -102,6 +107,19 @@ function extractYouTubeVideoId(input) {
   }
 
   return "";
+}
+
+function parseYouTubeDurationToMs(input) {
+  const value = String(input ?? "");
+  const match = value.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!match) {
+    return 0;
+  }
+
+  const hours = Number(match[1] ?? 0);
+  const minutes = Number(match[2] ?? 0);
+  const seconds = Number(match[3] ?? 0);
+  return ((hours * 60 * 60) + (minutes * 60) + seconds) * 1000;
 }
 
 function sendBadRequest(response, message) {
@@ -270,6 +288,91 @@ app.get("/api/rooms/:roomCode", requireAuth, async (request, response) => {
     }
 
     return response.json({ room });
+  } catch (error) {
+    return response.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/api/youtube/search", requireAuth, async (request, response) => {
+  try {
+    const query = normalizeSearchQuery(request.query.q);
+    if (!query) {
+      return sendBadRequest(response, "Search query is required.");
+    }
+
+    if (!YOUTUBE_API_KEY) {
+      return response.status(503).json({
+        message: "YouTube search is not configured on the server yet."
+      });
+    }
+
+    const searchParams = new URLSearchParams({
+      part: "snippet",
+      type: "video",
+      maxResults: "8",
+      q: query,
+      key: YOUTUBE_API_KEY
+    });
+
+    const searchResponse = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`
+    );
+    const searchPayload = await searchResponse.json();
+
+    if (!searchResponse.ok) {
+      throw new Error(searchPayload.error?.message ?? "YouTube search failed.");
+    }
+
+    const videoIds = (searchPayload.items ?? [])
+      .map((item) => item.id?.videoId)
+      .filter(Boolean);
+
+    let durationByVideoId = new Map();
+    if (videoIds.length > 0) {
+      const videoParams = new URLSearchParams({
+        part: "contentDetails",
+        id: videoIds.join(","),
+        key: YOUTUBE_API_KEY
+      });
+
+      const videoResponse = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?${videoParams.toString()}`
+      );
+      const videoPayload = await videoResponse.json();
+
+      if (!videoResponse.ok) {
+        throw new Error(videoPayload.error?.message ?? "YouTube video details failed.");
+      }
+
+      durationByVideoId = new Map(
+        (videoPayload.items ?? []).map((item) => [
+          item.id,
+          parseYouTubeDurationToMs(item.contentDetails?.duration)
+        ])
+      );
+    }
+
+    const results = (searchPayload.items ?? []).map((item) => {
+      const videoId = item.id?.videoId;
+      const title = item.snippet?.title ?? "Untitled video";
+      const channelTitle = item.snippet?.channelTitle ?? "YouTube";
+      const artwork =
+        item.snippet?.thumbnails?.high?.url ??
+        item.snippet?.thumbnails?.medium?.url ??
+        item.snippet?.thumbnails?.default?.url ??
+        "";
+
+      return {
+        videoId,
+        title,
+        artist: channelTitle,
+        artwork,
+        durationMs: durationByVideoId.get(videoId) ?? 0,
+        streamUrl: `https://www.youtube.com/watch?v=${videoId}`
+      };
+    });
+
+    return response.json({ results });
   } catch (error) {
     return response.status(500).json({ message: error.message });
   }

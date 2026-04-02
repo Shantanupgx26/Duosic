@@ -132,6 +132,10 @@ function getPositionAt(playback, nowMs = Date.now()) {
   return clampPosition(livePosition, playback.trackId);
 }
 
+function getTrackIndex(queue, trackId) {
+  return queue.findIndex((track) => track.id === trackId);
+}
+
 function toSerializableRoom(room) {
   const queue = normalizeQueue(room.queue);
   const queueTrackMap = new Map(queue.map((track) => [track.id, track]));
@@ -387,6 +391,23 @@ export class RoomStore {
       }
 
       room.playback.trackId = nextTrackId;
+      room.playback.positionMs = 0;
+      room.playback.updatedAt = now;
+    }
+
+    if (type === "next-track" || type === "previous-track") {
+      const direction = type === "next-track" ? 1 : -1;
+      const currentIndex = getTrackIndex(room.queue, room.playback.trackId);
+      const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+      const nextIndex = room.queue.length
+        ? (safeIndex + direction + room.queue.length) % room.queue.length
+        : -1;
+
+      if (nextIndex < 0 || !room.queue[nextIndex]) {
+        throw new Error("Track not found");
+      }
+
+      room.playback.trackId = room.queue[nextIndex].id;
       room.playback.positionMs = 0;
       room.playback.updatedAt = now;
     }

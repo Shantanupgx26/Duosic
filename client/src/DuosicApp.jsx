@@ -450,7 +450,9 @@ function PlayerView({
   durationLabel,
   canControlPlayback,
   onCopyInvite,
+  onNextTrack,
   onEmitTransport,
+  onPreviousTrack,
   onSeekDraft
 }) {
   return (
@@ -494,6 +496,14 @@ function PlayerView({
 
           <div className="transport-actions">
             <button
+              className="ghost-button"
+              type="button"
+              onClick={onPreviousTrack}
+              disabled={!canControlPlayback}
+            >
+              Previous
+            </button>
+            <button
               className="primary-button"
               type="button"
               onClick={() => onEmitTransport("toggle-play")}
@@ -503,6 +513,14 @@ function PlayerView({
             </button>
             <button className="ghost-button" type="button" onClick={onCopyInvite} disabled={!shareLink}>
               {copyState || "Copy invite"}
+            </button>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={onNextTrack}
+              disabled={!canControlPlayback}
+            >
+              Next
             </button>
           </div>
         </div>
@@ -536,10 +554,16 @@ function QueueView({
   sessionRoomCode,
   trackBusy,
   trackForm,
+  youtubeSearchQuery,
+  youtubeSearchBusy,
+  youtubeSearchResults,
   queue,
   currentTrackId,
   canControlPlayback,
   onTrackFormChange,
+  onYouTubeSearchQueryChange,
+  onYouTubeSearch,
+  onAddSearchResult,
   onAddTrack,
   onEmitTransport
 }) {
@@ -551,6 +575,53 @@ function QueueView({
           <h1>Room queue</h1>
           <p>Switch tracks here, or add a new song by direct audio URL or YouTube link.</p>
         </div>
+
+        {isHost ? (
+          <div className="search-card">
+            <div className="page-head compact-page-head">
+              <span className="eyebrow">YouTube search</span>
+              <h2>Find a video inside the app</h2>
+              <p>Requires `YOUTUBE_API_KEY` on the server.</p>
+            </div>
+
+            <div className="search-row">
+              <input
+                value={youtubeSearchQuery}
+                onChange={(event) => onYouTubeSearchQueryChange(event.target.value)}
+                placeholder="Search YouTube"
+              />
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={onYouTubeSearch}
+                disabled={youtubeSearchBusy}
+              >
+                {youtubeSearchBusy ? "Searching" : "Search"}
+              </button>
+            </div>
+
+            {youtubeSearchResults.length ? (
+              <div className="search-results">
+                {youtubeSearchResults.map((result) => (
+                  <div className="search-result-row" key={result.videoId}>
+                    <img alt="" src={result.artwork} />
+                    <div>
+                      <strong>{result.title}</strong>
+                      <span>{result.artist}</span>
+                    </div>
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => onAddSearchResult(result)}
+                    >
+                      Add
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {isHost ? (
           <div className="form-grid-two">
@@ -745,6 +816,9 @@ export default function DuosicApp() {
     durationMs: ""
   });
   const [trackBusy, setTrackBusy] = useState(false);
+  const [youtubeSearchQuery, setYouTubeSearchQuery] = useState("");
+  const [youtubeSearchBusy, setYouTubeSearchBusy] = useState(false);
+  const [youtubeSearchResults, setYouTubeSearchResults] = useState([]);
   const [youtubeReady, setYoutubeReady] = useState(false);
   const [youtubeDurationMs, setYoutubeDurationMs] = useState(0);
   const [notice, setNotice] = useState(
@@ -967,7 +1041,11 @@ export default function DuosicApp() {
                 }
 
                 if (window.YT && event.data === window.YT.PlayerState.ENDED) {
-                  setNotice("The YouTube track ended. Pick the next song from the queue.");
+                  if (isHost && queue.length > 1) {
+                    emitTransport("next-track");
+                  } else {
+                    setNotice("The YouTube track ended. Pick the next song from the queue.");
+                  }
                 }
               },
               onError: () => {
@@ -986,7 +1064,7 @@ export default function DuosicApp() {
     return () => {
       isActive = false;
     };
-  }, [currentTrack?.videoId, isYouTubeTrack]);
+  }, [currentTrack?.videoId, isHost, isYouTubeTrack, queue.length]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -1032,10 +1110,22 @@ export default function DuosicApp() {
     };
 
     syncAudio();
+    const handleEnded = () => {
+      if (isHost && queue.length > 1) {
+        emitTransport("next-track");
+      } else {
+        setNotice("The track ended. Pick the next song from the queue.");
+      }
+    };
+
+    audio.addEventListener("ended", handleEnded);
     const intervalId = window.setInterval(syncAudio, 700);
 
-    return () => window.clearInterval(intervalId);
-  }, [clockOffsetMs, currentTrack, effectiveDurationMs, isYouTubeTrack, room]);
+    return () => {
+      audio.removeEventListener("ended", handleEnded);
+      window.clearInterval(intervalId);
+    };
+  }, [clockOffsetMs, currentTrack, effectiveDurationMs, isHost, isYouTubeTrack, queue.length, room]);
 
   useEffect(() => {
     if (!isYouTubeTrack || !youtubeReady || !youtubePlayerRef.current || !currentTrack || !room?.playback) {
@@ -1270,6 +1360,62 @@ export default function DuosicApp() {
     }
   }
 
+  async function handleYouTubeSearch() {
+    if (!youtubeSearchQuery.trim() || !authSession?.token) {
+      return;
+    }
+
+    setYouTubeSearchBusy(true);
+
+    try {
+      const payload = await sendRequest(
+        `/api/youtube/search?q=${encodeURIComponent(youtubeSearchQuery.trim())}`,
+        {
+          token: authSession.token
+        }
+      );
+      setYouTubeSearchResults(payload.results ?? []);
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setYouTubeSearchBusy(false);
+    }
+  }
+
+  async function handleAddSearchResult(result) {
+    if (!session?.roomCode || !authSession?.token) {
+      setNotice("Create or join a room before adding tracks.");
+      return;
+    }
+
+    setTrackForm({
+      title: result.title,
+      artist: result.artist,
+      streamUrl: result.streamUrl,
+      artwork: result.artwork,
+      durationMs: result.durationMs ? String(result.durationMs) : ""
+    });
+
+    try {
+      const payload = await sendRequest(`/api/rooms/${session.roomCode}/tracks`, {
+        method: "POST",
+        token: authSession.token,
+        body: {
+          title: result.title,
+          artist: result.artist,
+          streamUrl: result.streamUrl,
+          artwork: result.artwork,
+          durationMs: result.durationMs
+        }
+      });
+
+      setRoom(payload.room);
+      setNotice("YouTube result added to the queue.");
+    } catch (error) {
+      setNotice(error.message);
+    }
+  }
+
   function handleLogout() {
     setAuthSession(null);
     setSession(null);
@@ -1287,6 +1433,9 @@ export default function DuosicApp() {
           sessionRoomCode={session?.roomCode}
           trackBusy={trackBusy}
           trackForm={trackForm}
+          youtubeSearchQuery={youtubeSearchQuery}
+          youtubeSearchBusy={youtubeSearchBusy}
+          youtubeSearchResults={youtubeSearchResults}
           queue={queue}
           currentTrackId={currentTrack?.id}
           canControlPlayback={canControlPlayback}
@@ -1296,6 +1445,9 @@ export default function DuosicApp() {
               [field]: value
             }))
           }
+          onYouTubeSearchQueryChange={setYouTubeSearchQuery}
+          onYouTubeSearch={handleYouTubeSearch}
+          onAddSearchResult={handleAddSearchResult}
           onAddTrack={handleAddTrack}
           onEmitTransport={emitTransport}
         />
@@ -1333,7 +1485,9 @@ export default function DuosicApp() {
         durationLabel={durationLabel}
         canControlPlayback={canControlPlayback}
         onCopyInvite={handleCopyInvite}
+        onNextTrack={() => emitTransport("next-track")}
         onEmitTransport={emitTransport}
+        onPreviousTrack={() => emitTransport("previous-track")}
         onSeekDraft={handleSeekDraft}
       />
     );

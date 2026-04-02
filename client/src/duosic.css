@@ -372,7 +372,8 @@ button:disabled {
 .form-stack,
 .form-grid-two,
 .queue-stack,
-.people-stack {
+.people-stack,
+.search-results {
   display: grid;
   gap: 14px;
 }
@@ -615,6 +616,70 @@ button:disabled {
   margin-top: 18px;
 }
 
+.search-card {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.compact-page-head h2 {
+  margin: 10px 0 0;
+  font-size: 1.2rem;
+  line-height: 1.1;
+}
+
+.compact-page-head p {
+  margin: 8px 0 0;
+}
+
+.search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.search-row input {
+  min-height: 50px;
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--text);
+  outline: none;
+}
+
+.search-row input:focus {
+  border-color: var(--accent);
+}
+
+.search-result-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.search-result-row img {
+  width: 68px;
+  height: 68px;
+  border-radius: 14px;
+  object-fit: cover;
+}
+
+.search-result-row span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .queue-list-row,
 .people-row,
 .chat-bubble {
@@ -749,6 +814,11 @@ button:disabled {
   .form-grid-two,
   .marketing-grid,
   .sidebar-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .search-row,
+  .search-result-row {
     grid-template-columns: 1fr;
   }
 
