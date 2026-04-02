@@ -69,8 +69,14 @@ function normalizeTrack(track) {
   const streamUrl = String(track.streamUrl ?? "").trim();
   const artwork = String(track.artwork ?? "").trim() || FALLBACK_ARTWORK;
   const durationMs = Number(track.durationMs ?? 0);
+  const sourceType = track.sourceType === "youtube" ? "youtube" : "audio";
+  const videoId = String(track.videoId ?? "").trim();
 
   if (!id || !title || !artist || !streamUrl) {
+    return null;
+  }
+
+  if (sourceType === "youtube" && !videoId) {
     return null;
   }
 
@@ -80,6 +86,8 @@ function normalizeTrack(track) {
     artist,
     artwork,
     streamUrl,
+    sourceType,
+    videoId: sourceType === "youtube" ? videoId : "",
     durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.round(durationMs) : 0,
     isCustom: Boolean(track.isCustom)
   };
@@ -402,6 +410,8 @@ export class RoomStore {
       artist: track.artist,
       artwork: track.artwork,
       streamUrl: track.streamUrl,
+      sourceType: track.sourceType,
+      videoId: track.videoId,
       durationMs: track.durationMs,
       isCustom: true
     });

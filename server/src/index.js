@@ -80,6 +80,30 @@ function normalizeDurationMs(input) {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
 }
 
+function extractYouTubeVideoId(input) {
+  const value = String(input ?? "").trim();
+
+  try {
+    const url = new URL(value);
+    if (url.hostname.includes("youtu.be")) {
+      return url.pathname.replace(/\//g, "").slice(0, 32);
+    }
+
+    if (url.hostname.includes("youtube.com")) {
+      if (url.pathname === "/watch") {
+        return url.searchParams.get("v")?.slice(0, 32) ?? "";
+      }
+
+      const pathMatch = url.pathname.match(/^\/(embed|shorts)\/([^/?]+)/);
+      return pathMatch?.[2]?.slice(0, 32) ?? "";
+    }
+  } catch {
+    return "";
+  }
+
+  return "";
+}
+
 function sendBadRequest(response, message) {
   return response.status(400).json({ message });
 }
@@ -255,13 +279,18 @@ app.post("/api/rooms/:roomCode/tracks", requireAuth, async (request, response) =
   try {
     const roomCode = normalizeRoomCode(request.params.roomCode);
     const title = normalizeTrackField(request.body.title, 120);
-    const artist = normalizeTrackField(request.body.artist, 120);
+    const rawArtist = normalizeTrackField(request.body.artist, 120);
     const streamUrl = normalizeTrackUrl(request.body.streamUrl);
     const artwork = normalizeTrackUrl(request.body.artwork);
     const durationMs = normalizeDurationMs(request.body.durationMs);
+    const videoId = extractYouTubeVideoId(streamUrl);
+    const sourceType = videoId ? "youtube" : "audio";
+    const artist = rawArtist || (sourceType === "youtube" ? "YouTube" : "Custom source");
+    const resolvedArtwork =
+      artwork || (videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : "");
 
-    if (!roomCode || !title || !artist || !streamUrl) {
-      return sendBadRequest(response, "Room code, title, artist, and a direct audio URL are required.");
+    if (!roomCode || !title || !streamUrl) {
+      return sendBadRequest(response, "Room code, title, and a media URL are required.");
     }
 
     const room = await roomStore.addTrack({
@@ -270,8 +299,10 @@ app.post("/api/rooms/:roomCode/tracks", requireAuth, async (request, response) =
       track: {
         title,
         artist,
-        artwork,
+        artwork: resolvedArtwork,
         streamUrl,
+        sourceType,
+        videoId,
         durationMs
       }
     });

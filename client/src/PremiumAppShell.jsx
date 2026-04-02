@@ -6,6 +6,43 @@ const API_URL = import.meta.env.VITE_API_URL ?? "";
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? BROWSER_ORIGIN;
 const AUTH_STORAGE_KEY = "duosic-auth-v1";
 const THEME_STORAGE_KEY = "duosic-theme-v1";
+const YOUTUBE_API_SRC = "https://www.youtube.com/iframe_api";
+let youtubeApiPromise = null;
+
+function loadYouTubeIframeApi() {
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error("YouTube API is only available in the browser."));
+  }
+
+  if (window.YT?.Player) {
+    return Promise.resolve(window.YT);
+  }
+
+  if (youtubeApiPromise) {
+    return youtubeApiPromise;
+  }
+
+  youtubeApiPromise = new Promise((resolve, reject) => {
+    const previousReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      previousReady?.();
+      resolve(window.YT);
+    };
+
+    const existingScript = document.querySelector(`script[src="${YOUTUBE_API_SRC}"]`);
+    if (existingScript) {
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = YOUTUBE_API_SRC;
+    script.async = true;
+    script.onerror = () => reject(new Error("Failed to load the YouTube player."));
+    document.head.appendChild(script);
+  });
+
+  return youtubeApiPromise;
+}
 
 function formatClock(totalSeconds) {
   const minutes = Math.floor(totalSeconds / 60);
@@ -78,6 +115,9 @@ function SectionHeader({ eyebrow, title, description }) {
 export default function PremiumAppShell() {
   const audioRef = useRef(null);
   const socketRef = useRef(null);
+  const youtubeMountRef = useRef(null);
+  const youtubePlayerRef = useRef(null);
+  const youtubeVideoIdRef = useRef("");
   const [theme, setTheme] = useState(() => loadStoredTheme());
   const [authSession, setAuthSession] = useState(() => loadStoredAuth());
   const [authMode, setAuthMode] = useState("register");
@@ -102,6 +142,8 @@ export default function PremiumAppShell() {
     durationMs: ""
   });
   const [trackBusy, setTrackBusy] = useState(false);
+  const [youtubeReady, setYoutubeReady] = useState(false);
+  const [youtubeDurationMs, setYoutubeDurationMs] = useState(0);
   const [notice, setNotice] = useState(
     "Sign in, open a room, and keep every listener on the same clock."
   );
@@ -119,6 +161,8 @@ export default function PremiumAppShell() {
   const queue = room?.queue ?? [];
   const roomCode = room?.roomCode ?? session?.roomCode ?? "------";
   const playerState = room?.playback?.isPlaying ? "Playing" : "Paused";
+  const isYouTubeTrack = Boolean(currentTrack?.sourceType === "youtube" && currentTrack?.videoId);
+  const effectiveDurationMs = Math.max(currentTrack?.durationMs ?? 0, youtubeDurationMs);
   const navLinks = [
     { id: "player", label: "Player" },
     { id: "account", label: "Access" },
@@ -224,8 +268,76 @@ export default function PremiumAppShell() {
   }, [authSession?.token, currentUser?.id, session]);
 
   useEffect(() => {
+    if (!isYouTubeTrack) {
+      setYoutubeDurationMs(0);
+      setYoutubeReady(false);
+      youtubeVideoIdRef.current = "";
+      youtubePlayerRef.current?.pauseVideo?.();
+      return;
+    }
+
+    audioRef.current?.pause();
+
+    let isActive = true;
+
+    loadYouTubeIframeApi()
+      .then((YT) => {
+        if (!isActive || !youtubeMountRef.current) {
+          return;
+        }
+
+        if (!youtubePlayerRef.current) {
+          youtubePlayerRef.current = new YT.Player(youtubeMountRef.current, {
+            videoId: currentTrack.videoId,
+            playerVars: {
+              playsinline: 1,
+              rel: 0,
+              origin: BROWSER_ORIGIN || window.location.origin
+            },
+            events: {
+              onReady: (event) => {
+                if (!isActive) {
+                  return;
+                }
+
+                youtubeVideoIdRef.current = currentTrack.videoId;
+                setYoutubeReady(true);
+                const nextDurationMs = Math.round((event.target.getDuration?.() ?? 0) * 1000);
+                if (nextDurationMs > 0) {
+                  setYoutubeDurationMs(nextDurationMs);
+                }
+              },
+              onStateChange: (event) => {
+                const nextDurationMs = Math.round((event.target.getDuration?.() ?? 0) * 1000);
+                if (nextDurationMs > 0) {
+                  setYoutubeDurationMs(nextDurationMs);
+                }
+
+                if (window.YT && event.data === window.YT.PlayerState.ENDED) {
+                  setNotice("The YouTube track ended. Pick the next song from the queue.");
+                }
+              },
+              onError: () => {
+                setNotice("This YouTube video could not be played in the embedded room player.");
+              }
+            }
+          });
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setNotice(error.message);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isYouTubeTrack, currentTrack?.videoId]);
+
+  useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !currentTrack || !room?.playback) {
+    if (isYouTubeTrack || !audio || !currentTrack || !room?.playback) {
       return;
     }
 
@@ -268,7 +380,64 @@ export default function PremiumAppShell() {
     const intervalId = window.setInterval(syncAudio, 700);
 
     return () => window.clearInterval(intervalId);
-  }, [room, currentTrack, clockOffsetMs]);
+  }, [room, currentTrack, clockOffsetMs, isYouTubeTrack]);
+
+  useEffect(() => {
+    if (!isYouTubeTrack || !youtubeReady || !youtubePlayerRef.current || !currentTrack || !room?.playback) {
+      return;
+    }
+
+    const syncYouTubePlayer = () => {
+      const player = youtubePlayerRef.current;
+      const expectedPositionMs = getExpectedPositionMs(
+        room.playback,
+        effectiveDurationMs,
+        clockOffsetMs,
+        Date.now()
+      );
+
+      if (youtubeVideoIdRef.current !== currentTrack.videoId) {
+        youtubeVideoIdRef.current = currentTrack.videoId;
+        const loadArgs = {
+          videoId: currentTrack.videoId,
+          startSeconds: expectedPositionMs / 1000
+        };
+
+        if (room.playback.isPlaying) {
+          player.loadVideoById(loadArgs);
+        } else {
+          player.cueVideoById(loadArgs);
+        }
+        return;
+      }
+
+      const currentPositionMs = Math.round((player.getCurrentTime?.() ?? 0) * 1000);
+      if (Math.abs(currentPositionMs - expectedPositionMs) > 1200) {
+        player.seekTo(expectedPositionMs / 1000, true);
+      }
+
+      const nextDurationMs = Math.round((player.getDuration?.() ?? 0) * 1000);
+      if (nextDurationMs > 0) {
+        setYoutubeDurationMs(nextDurationMs);
+      }
+
+      const playerState = player.getPlayerState?.();
+      const playingState = window.YT?.PlayerState?.PLAYING;
+
+      if (room.playback.isPlaying && playerState !== playingState) {
+        player.playVideo?.();
+      }
+
+      if (!room.playback.isPlaying && playerState === playingState) {
+        player.pauseVideo?.();
+      }
+    };
+
+    syncYouTubePlayer();
+    const intervalId = window.setInterval(syncYouTubePlayer, 900);
+
+    return () => window.clearInterval(intervalId);
+  }, [isYouTubeTrack, youtubeReady, currentTrack, room, clockOffsetMs, effectiveDurationMs]);
 
   const progressMs = useMemo(() => {
     if (!room?.playback || !currentTrack) {
@@ -279,12 +448,12 @@ export default function PremiumAppShell() {
       return dragPositionMs;
     }
 
-    return getExpectedPositionMs(room.playback, currentTrack.durationMs, clockOffsetMs, nowMs);
-  }, [room, currentTrack, dragPositionMs, clockOffsetMs, nowMs]);
+    return getExpectedPositionMs(room.playback, effectiveDurationMs, clockOffsetMs, nowMs);
+  }, [room, currentTrack, dragPositionMs, clockOffsetMs, nowMs, effectiveDurationMs]);
 
   const progressLabel = currentTrack ? formatClock(progressMs / 1000) : "0:00";
   const durationLabel =
-    currentTrack && currentTrack.durationMs > 0 ? formatClock(currentTrack.durationMs / 1000) : "--:--";
+    currentTrack && effectiveDurationMs > 0 ? formatClock(effectiveDurationMs / 1000) : "--:--";
 
   async function handleAuthSubmit() {
     setAuthBusy(true);
@@ -516,9 +685,10 @@ export default function PremiumAppShell() {
           <audio ref={audioRef} preload="metadata" />
 
           <div
-            className="cover-frame"
+            className={isYouTubeTrack ? "cover-frame cover-frame-video" : "cover-frame"}
             style={currentTrack ? { backgroundImage: `url(${currentTrack.artwork})` } : undefined}
           >
+            {isYouTubeTrack ? <div className="youtube-player-shell" ref={youtubeMountRef} /> : null}
             {!currentTrack ? <div className="cover-placeholder">No track loaded</div> : null}
           </div>
 
@@ -784,13 +954,13 @@ export default function PremiumAppShell() {
                     />
                   </label>
                   <label className="field">
-                    <span>Audio URL</span>
+                    <span>Media URL</span>
                     <input
                       value={trackForm.streamUrl}
                       onChange={(event) =>
                         setTrackForm((current) => ({ ...current, streamUrl: event.target.value }))
                       }
-                      placeholder="https://example.com/song.mp3"
+                      placeholder="https://youtube.com/watch?v=... or https://example.com/song.mp3"
                     />
                   </label>
                   <label className="field">
@@ -810,7 +980,7 @@ export default function PremiumAppShell() {
                       onChange={(event) =>
                         setTrackForm((current) => ({ ...current, durationMs: event.target.value }))
                       }
-                      placeholder="240000"
+                      placeholder="Used for direct audio. YouTube can stay blank."
                     />
                   </label>
                 </div>
